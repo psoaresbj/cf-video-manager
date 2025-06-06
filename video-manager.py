@@ -1,82 +1,84 @@
 import asyncio
-import httpx
 import questionary
 import typer
+import httpx
+
 from rich.console import Console
 from typing import Optional
 
-from config import settings
-from models.video import Video, Category
-from services.cloudflare import get_token_url, list_existing_videos, upload_video
-from services.video_store import VideoStore
+from constants.category import Category
+from services.cloudflare import delete_video_by_id, generate_signed_url, list_videos, upload_video
 
 app = typer.Typer(help="Manage Cloudflare Stream videos")
 console = Console()
-store = VideoStore()
 
-@app.command("sync")
-def sync_videos():
-    """Sync local video store with Cloudflare — remove stale entries."""
-    console.print("[bold blue]Syncing local video metadata with Cloudflare...[/bold blue]")
-
-    existing = list_existing_videos()
-
-    removed = store.delete_by_ids(existing)
-    console.print(f"[green]Sync complete.[/green] Removed {removed} stale video(s).")
-
-@app.command("list")
-def list_videos(
-    category: Optional[str] = typer.Option(None, help="Filter by category"),
-    pages: int = typer.Option(5, help="How many videos to list"),
-    query: Optional[str] = typer.Option(None, help="Search in title or description")
+@app.command(name="list", help="List and manage videos")
+def list_videos_command(
+    search: Optional[str] = typer.Option(None, help="Search by title or meta.name"),
+    start: Optional[str] = typer.Option(None, help="ISO date to list videos created after"),
+    end: Optional[str] = typer.Option(None, help="ISO date to list videos created before"),
+    category: Optional[str] = typer.Option(None, help="Filter by category in metadata"),
 ):
-    """List videos with optional filtering and interactive selection."""
-    videos = store.list_videos()
+    try:
+        get_videos = list_videos(search=search, start=start, end=end)
+
+        videos = asyncio.run(get_videos)
+    except httpx.HTTPError as e:
+        console.print(f"[red]Error fetching videos: {e}[/red]")
+        raise typer.Exit(code=1)
 
     if category:
-        videos = [v for v in videos if v.category == category]
-
-    if query:
-        videos = [
-            v for v in videos
-            if query.lower() in v.title.lower() or query.lower() in (v.description or "").lower()
-        ]
-
-    videos = videos[:pages]
+        videos = [v for v in videos if v.get("meta", {}).get("category") == category]
 
     if not videos:
-        console.print("[yellow]No videos found.[/yellow]")
+        console.print("[yellow]No videos found with the given criteria.[/yellow]")
         raise typer.Exit()
 
     choices = [
-        f"{i+1}. Title: '{v.title}', Description: '{v.description}'"
+        f"{i+1}. ID: '{v['uid']}', Title: '{v.get('meta', {}).get('title', '')}'"
         for i, v in enumerate(videos)
     ]
 
-    selected = questionary.select(
-        "Select a video to get its playback URL",
-        choices=choices
-    ).ask()
+    while True:
+        selected = questionary.select("Select a video", choices=choices + ["Exit"]).ask()
+        if selected == "Exit":
+            break
 
-    index = choices.index(selected)
-    video = videos[index]
+        index = choices.index(selected)
+        video = videos[index]
+        video_id = video["uid"]
+        title = video.get("meta", {}).get("title", "Untitled")
 
-    async def fetch_token():
-        return await get_token_url(video.video_id)
+        action = questionary.select(
+            f"What do with '{title}'?",
+            choices=["Preview", "Delete", "Back"]
+        ).ask()
 
-    signed_url = asyncio.run(fetch_token())
+        if action == "Preview":
+            url = asyncio.run(generate_signed_url(video_id))
+            console.print("\n[bold green]Signed Iframe URL[/bold green]")
+            console.print(url)
 
-    console.print("\n[bold green]Selected Video[/bold green]")
-    console.print(f"Title: {video.title}")
-    console.print(f"Description: {video.description}")
-    console.print(f"Category: {video.category}")
-    console.print(f"URL: {signed_url}")
+        elif action == "Delete":
+            confirm = questionary.confirm(f"Delete '{title}'?").ask()
+            if confirm:
+                success = asyncio.run(delete_video_by_id(video_id))
+                console.print("[red]Deleted![/red]" if success else "[red]Delete failed.[/red]")
+                if success:
+                    videos.pop(index)
+                    choices.pop(index)
+                    if not videos:
+                        console.print("[yellow]No more videos.[/yellow]")
+                        break
 
-@app.command()
+        elif action == "Back":
+            continue
+
+
+@app.command(name="upload", help="Upload a new video")
 def upload(path: str):
-    """Upload a video file to Cloudflare Stream."""
-    title = typer.prompt("Title", default="Test video")
-    description = typer.prompt("Description", default="This is a test video")
+    title = typer.prompt("Title")
+    description = typer.prompt("Description")
 
     category = questionary.select(
         "Select category:",
@@ -84,17 +86,17 @@ def upload(path: str):
     ).ask()
 
     async def process():
-        uid = upload_video(path, title)
-
-        video = Video(
-            category=category,
-            video_id=uid,
-            description=description,
-            title=title
+        video_id = upload_video(
+            path,
+            name=title,
+            metadata={
+                "title": title,
+                "description": description,
+                "category": category
+            }
         )
 
-        store.save_video(video)
-        console.print(f"[green]Upload complete. Video ID: {uid}[/green]")
+        console.print(f"[green]Upload complete. Video ID: {video_id}[/green]")
 
     asyncio.run(process())
 

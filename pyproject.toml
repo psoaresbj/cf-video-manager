@@ -1,16 +1,19 @@
 [project]
 name = "cf-video-manager"
 version = "0.1.0"
-description = "Video manager for Cloudflare video stream"
+description = "CLI tool to manage Cloudflare Stream videos with metadata and signed playback"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.10"
+
 dependencies = [
     "httpx>=0.28.1",
     "pydantic>=2.11.5",
     "pydantic-settings>=2.9.1",
     "questionary>=2.1.0",
     "rich>=14.0.0",
-    "shellingham>=1.5.4",
     "typer>=0.16.0",
-    "tuspy>=1.0.4",
+    "tuspy>=1.0.4"
 ]
+
+[tool.setuptools]
+packages = ["."]

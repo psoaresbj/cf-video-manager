@@ -1,11 +1,12 @@
 import httpx
 import pathlib
 
+from typing import Optional
+
 from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
 from tusclient import client
 
 from config import settings
-from utils  import extract_uid_from_url
 
 BASE_URL = f"https://api.cloudflare.com/client/v4/accounts/{settings.CLOUDFLARE_ACCOUNT_ID}"
 
@@ -13,41 +14,49 @@ headers = {
     "Authorization": f"Bearer {settings.CLOUDFLARE_API_TOKEN}"
 }
 
-async def get_token_url(video_id: str) -> str:
+async def delete_video_by_id(video_id: str) -> None:
     async with httpx.AsyncClient() as client:
-        response = await client.post(
-            f"{BASE_URL}/stream/{video_id}/token",
+        response = await client.delete(
+            f"{BASE_URL}/stream/{video_id}",
             headers=headers
         )
-        response.raise_for_status()
-        token = response.json()["result"]["token"]
-        return f"https://videodelivery.net/{video_id}/manifest/video.m3u8?token={token}"
+        if response.status_code == 200:
+            return True
+        return False
 
-def list_existing_videos() -> set[str]:
-    existing = set()
-    seen_ids = set()
-    page = 1
+async def generate_signed_url(video_id: str) -> str:
+    resp = await httpx.AsyncClient().post(
+        f"{BASE_URL}/stream/{video_id}/token",
+        headers=headers
+    )
+    resp.raise_for_status()
+    token = resp.json()["result"]["token"]
+    return f"https://{settings.CLOUDFLARE_CUSTOMER_SUBDOMAIN}/{token}/iframe"
 
-    while True:
-        res = httpx.get(
-            f"https://api.cloudflare.com/client/v4/accounts/{settings.CLOUDFLARE_ACCOUNT_ID}/stream",
+async def list_videos(
+    search: Optional[str] = None,
+    start: Optional[str] = None,
+    end: Optional[str] = None,
+) -> list[dict]:
+    params: dict = {}
+    if search:
+        params["search"] = search
+    if start:
+        params["start"] = start
+    if end:
+        params["end"] = end
+
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"{BASE_URL}/stream",
             headers=headers,
-            params={"page": page, "per_page": 100}
+            params=params
         )
-        res.raise_for_status()
-        videos = res.json()["result"]
+        response.raise_for_status()
+        return response.json().get("result", [])
 
-        new_ids = {v["uid"] for v in videos}
-        if not new_ids or new_ids.issubset(seen_ids):
-            break
 
-        seen_ids.update(new_ids)
-        existing.update(new_ids)
-        page += 1
-
-    return existing
-
-def upload_video(file_path: str, name: str) -> str:
+def upload_video(file_path: str, name: str, metadata: dict[str, str]) -> str:
     file = pathlib.Path(file_path)
     if not file.exists():
         raise FileNotFoundError(f"File not found: {file_path}")
@@ -62,7 +71,9 @@ def upload_video(file_path: str, name: str) -> str:
     uploader = tus.uploader(str(file), chunk_size=5 * 1024 * 1024)  # 5MB
 
     uploader.metadata = {
-        "name": name
+        "name": name,
+        "requiresignedurls": "true",
+        **metadata
     }
 
     with Progress(

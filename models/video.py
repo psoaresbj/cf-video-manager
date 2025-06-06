@@ -1,11 +1,6 @@
 from pydantic import BaseModel, Field
-from typing import Literal
 
-Category = Literal[
-    "manager-tool-updates",
-    "misc"
-]
-
+from constants.category import Category
 
 class Video(BaseModel):
     category: Category = Field(default="misc", description="Category of the video")
