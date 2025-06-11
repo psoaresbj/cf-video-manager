@@ -5,7 +5,7 @@ A CLI tool for uploading and managing private videos on Cloudflare Stream. It su
 ## Features
 
 - Upload videos to Cloudflare Stream from the terminal
-- Set metadata: `title`, `description`, `category`, and `owner`
+- Set metadata: `title`, `description` and `category`
 - List videos via Cloudflare API (supports filters)
 - Retrieve secure, token-based playback URLs
 - Fully interactive CLI using `Typer`, `Rich`, and `Questionary`
